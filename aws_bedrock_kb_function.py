@@ -7,7 +7,7 @@ description: Integration with AWS Bedrock Knowledge Base for OpenWebUI only supp
 This module defines a Pipe class that utilizes AWS Bedrock Knowledge Base for retrieving information
 from your documents and providing AI-generated responses.
 """
-from typing import Optional, Callable, Awaitable, List, Dict, Any, Tuple, Union
+from typing import Optional, Callable, Awaitable, List, Dict, Any, Tuple, Union, Iterator
 from pydantic import BaseModel, Field, validator
 import os
 import time
@@ -334,7 +334,13 @@ class Pipe:
             # This should never happen due to the check in _get_model_family
             raise ValueError(f"Unsupported model ID: {self.valves.model_id}. Only Claude 3 models are supported.")
 
-    async def query_knowledge_base(self, query: str, chat_id: Optional[str], conversation_history: str = "") -> str:
+    async def query_knowledge_base(
+        self,
+        query: str,
+        chat_id: Optional[str],
+        conversation_history: str = "",
+        stream: bool = False,
+    ) -> Union[str, Iterator[str]]:
         """
         Query the AWS Bedrock Knowledge Base and generate a response.
         
@@ -344,7 +350,8 @@ class Pipe:
             conversation_history: Formatted conversation history for context (optional)
             
         Returns:
-            Generated response based on knowledge base results
+            Generated response based on knowledge base results or a stream
+            of partial responses when ``stream`` is True.
             
         Raises:
             ClientError: For AWS-specific errors
@@ -399,18 +406,37 @@ class Pipe:
             
             try:
                 request_body = self._get_model_request_body(prompt)
-                print(f"DEBUG - Sending request to model {self.valves.model_id}: {json.dumps(request_body)}")
-                
-                model_response = self.bedrock_client.invoke_model(
-                    modelId=self.valves.model_id,
-                    body=json.dumps(request_body)
+                print(
+                    f"DEBUG - Sending request to model {self.valves.model_id}: {json.dumps(request_body)}"
                 )
 
-                # Parse response using our helper method
-                response_body = json.loads(model_response['body'].read())
-                print(f"DEBUG - Raw response from model: {json.dumps(response_body)}")
-                
-                return self._parse_model_response(response_body)
+                if stream:
+                    def _stream():
+                        with self.bedrock_client.invoke_model_with_response_stream(
+                            modelId=self.valves.model_id,
+                            body=json.dumps(request_body),
+                            contentType="application/json",
+                        ) as response_stream:
+                            for event in response_stream.get("body", []):
+                                chunk = event.get("chunk", {}).get("bytes")
+                                if not chunk:
+                                    continue
+                                data = json.loads(chunk.decode("utf-8"))
+                                if data.get("type") == "content_block_delta":
+                                    yield data.get("delta", {}).get("text", "")
+                    return _stream()
+                else:
+                    model_response = self.bedrock_client.invoke_model(
+                        modelId=self.valves.model_id,
+                        body=json.dumps(request_body)
+                    )
+
+                    response_body = json.loads(model_response['body'].read())
+                    print(
+                        f"DEBUG - Raw response from model: {json.dumps(response_body)}"
+                    )
+
+                    return self._parse_model_response(response_body)
                 
             except ClientError as e:
                 error_message = str(e)
@@ -447,7 +473,7 @@ class Pipe:
         user: Optional[Dict[str, Any]] = None,
         __event_emitter__: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         __event_call__: Optional[Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]] = None,
-    ) -> Union[str, Dict[str, str]]:
+    ) -> Union[str, Dict[str, str], Iterator[str]]:
         """
         Main pipe function that processes the input and returns a response.
         
@@ -502,11 +528,17 @@ class Pipe:
                     __event_emitter__, "info", "Retrieving information from Knowledge Base...", False
                 )
                 
-                kb_response = await self.query_knowledge_base(question, chat_id, conversation_history)
-                
-                # Set assistant message with response
-                body["messages"].append({"role": "assistant", "content": kb_response})
-                
+                stream_enabled = body.get("stream", False)
+                kb_response = await self.query_knowledge_base(
+                    question,
+                    chat_id,
+                    conversation_history,
+                    stream=stream_enabled,
+                )
+
+                if not stream_enabled:
+                    body["messages"].append({"role": "assistant", "content": kb_response})
+
                 await self.emit_status(__event_emitter__, "info", "Complete", True)
                 return kb_response
                 
