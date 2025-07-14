@@ -21,7 +21,9 @@ The AWS Bedrock Knowledge Base Function connects OpenWebUI to your AWS Bedrock K
 4. (Optional) Copy `aws_bedrock_pipeline.py` to your OpenWebUI pipelines directory
    if you want to select between multiple Knowledge Bases. Set the `AWS_BEDROCK_KB_IDS`
    and `AWS_BEDROCK_KB_NAMES` environment variables with semicolon-separated values
-   to control which pipelines are available.
+   to control which pipelines are available. The pipeline also honors `AWS_SESSION_TOKEN`,
+   `AWS_ASSUME_ROLE_ARN`, and `AWS_ASSUME_ROLE_SESSION_NAME` for temporary or
+   cross-account credentials.
 
 ## Testing
 

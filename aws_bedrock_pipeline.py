@@ -21,6 +21,9 @@ class Pipeline:
         aws_region: str = Field(default="eu-central-1", description="AWS Region")
         knowledge_base_ids: str = Field(default="", description="Semicolon separated knowledge base IDs")
         knowledge_base_names: str = Field(default="", description="Semicolon separated knowledge base names")
+        aws_session_token: str = Field(default="placeholder", description="AWS Session Token (ignored if set to 'placeholder')")
+        assume_role_arn: str = Field(default="placeholder", description="IAM role ARN to assume (ignored if set to 'placeholder')")
+        assume_role_session_name: str = Field(default="bedrock-pipeline-session", description="Session name when assuming the IAM role")
         model_id: str = Field(default="anthropic.claude-3-5-sonnet-20240620-v1:0", description="Model ID for generation")
         max_tokens: int = Field(default=4096, description="Maximum tokens in response")
         temperature: float = Field(default=0.7, description="Generation temperature")
@@ -46,6 +49,9 @@ class Pipeline:
                 "number_of_results": int(os.getenv("NUMBER_OF_RESULTS", 5)),
                 "bedrock_runtime_endpoint_url": os.getenv("BEDROCK_RUNTIME_ENDPOINT_URL", ""),
                 "bedrock_agent_runtime_endpoint_url": os.getenv("BEDROCK_AGENT_RUNTIME_ENDPOINT_URL", ""),
+                "aws_session_token": os.getenv("AWS_SESSION_TOKEN", "placeholder"),
+                "assume_role_arn": os.getenv("AWS_ASSUME_ROLE_ARN", "placeholder"),
+                "assume_role_session_name": os.getenv("AWS_ASSUME_ROLE_SESSION_NAME", "bedrock-pipeline-session"),
             }
         )
         self._clients_initialized = False
@@ -77,11 +83,28 @@ class Pipeline:
     def _initialize_clients(self) -> None:
         if self._clients_initialized:
             return
-        session = boto3.Session(
-            aws_access_key_id=self.valves.aws_access_key_id,
-            aws_secret_access_key=self.valves.aws_secret_access_key,
-            region_name=self.valves.aws_region,
-        )
+        session_kwargs = {
+            "aws_access_key_id": self.valves.aws_access_key_id,
+            "aws_secret_access_key": self.valves.aws_secret_access_key,
+            "region_name": self.valves.aws_region,
+        }
+        if self.valves.aws_session_token and self.valves.aws_session_token != "placeholder":
+            session_kwargs["aws_session_token"] = self.valves.aws_session_token
+        session = boto3.Session(**session_kwargs)
+
+        if self.valves.assume_role_arn and self.valves.assume_role_arn != "placeholder":
+            sts_client = session.client("sts")
+            assumed = sts_client.assume_role(
+                RoleArn=self.valves.assume_role_arn,
+                RoleSessionName=self.valves.assume_role_session_name,
+            )
+            creds = assumed["Credentials"]
+            session = boto3.Session(
+                aws_access_key_id=creds["AccessKeyId"],
+                aws_secret_access_key=creds["SecretAccessKey"],
+                aws_session_token=creds["SessionToken"],
+                region_name=self.valves.aws_region,
+            )
         runtime_kwargs = {}
         agent_kwargs = {}
         if self.valves.bedrock_runtime_endpoint_url:
