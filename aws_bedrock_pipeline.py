@@ -143,10 +143,26 @@ If the information doesn't contain a clear answer, please say so."""
                 "top_p": self.valves.top_p,
                 "messages": [{"role": "user", "content": prompt}],
             }
-            response = self.bedrock_client.invoke_model(
-                modelId=self.valves.model_id, body=json.dumps(request_body)
-            )
-            resp_body = json.loads(response["body"].read())
-            return resp_body["content"][0]["text"]
+            if body.get("stream"):
+                def _stream():
+                    with self.bedrock_client.invoke_model_with_response_stream(
+                        modelId=self.valves.model_id,
+                        body=json.dumps(request_body),
+                        contentType="application/json",
+                    ) as stream:
+                        for event in stream.get("body", []):
+                            chunk = event.get("chunk", {}).get("bytes")
+                            if not chunk:
+                                continue
+                            data = json.loads(chunk.decode("utf-8"))
+                            if data.get("type") == "content_block_delta":
+                                yield data.get("delta", {}).get("text", "")
+                return _stream()
+            else:
+                response = self.bedrock_client.invoke_model(
+                    modelId=self.valves.model_id, body=json.dumps(request_body)
+                )
+                resp_body = json.loads(response["body"].read())
+                return resp_body["content"][0]["text"]
         except Exception as e:
             return f"Error querying knowledge base: {str(e)}"
